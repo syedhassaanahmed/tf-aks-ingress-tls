@@ -154,6 +154,7 @@ resource "null_resource" "kube_config" {
 
   provisioner "local-exec" {
     environment = {
+      # Use env var to pass kube config otherwise terraform cli will print it to stdout
       KUBE_CONFIG_RAW = azurerm_kubernetes_cluster.aks.kube_config_raw
     }
     command = <<EOF
