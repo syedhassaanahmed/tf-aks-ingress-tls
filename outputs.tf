@@ -7,5 +7,5 @@ output aks_cluster_name {
 }
 
 output ingress_fqdn {
-  value = azurerm_public_ip.ingress_controller.fqdn
+  value = azurerm_public_ip.ingress.fqdn
 }

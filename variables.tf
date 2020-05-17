@@ -22,10 +22,10 @@ variable default_cert_secret_name {
   default = "tls-secret"
 }
 
-variable ingress_namespace {
+variable ingress_ns {
   default = "ingress"
 }
 
 variable ingress_replica_count {
-  default = 3
+  default = 2
 }

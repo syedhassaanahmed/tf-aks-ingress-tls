@@ -30,6 +30,10 @@ resource "azurerm_kubernetes_cluster" "aks" {
   identity {
     type = "SystemAssigned"
   }
+
+  role_based_access_control {
+    enabled = true
+  }
 }
 
 provider "kubernetes" {
@@ -40,15 +44,6 @@ provider "kubernetes" {
   client_certificate     = base64decode(azurerm_kubernetes_cluster.aks.kube_config.0.client_certificate)
   client_key             = base64decode(azurerm_kubernetes_cluster.aks.kube_config.0.client_key)
   cluster_ca_certificate = base64decode(azurerm_kubernetes_cluster.aks.kube_config.0.cluster_ca_certificate)
-}
-
-resource "kubernetes_namespace" "cert_manager" {
-  metadata {
-    labels = {
-      name = var.cert_manager_ns
-    }
-    name = var.cert_manager_ns
-  }
 }
 
 provider "helm" {
@@ -63,6 +58,77 @@ provider "helm" {
   }
 }
 
+resource "kubernetes_namespace" "ingress" {
+  metadata {
+    labels = {
+      name = var.ingress_ns
+    }
+    name = var.ingress_ns
+  }
+}
+
+resource "kubernetes_namespace" "cert_manager" {
+  metadata {
+    labels = {
+      name = var.cert_manager_ns
+    }
+    name = var.cert_manager_ns
+  }
+}
+
+resource "azurerm_public_ip" "ingress" {
+  name                = "pip-${random_string.unique.result}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_kubernetes_cluster.aks.node_resource_group
+  domain_name_label   = random_string.unique.result
+  allocation_method   = "Static"
+  sku                 = "Standard"
+}
+
+resource "helm_release" "ingress" {
+  name       = "nginx-ingress"
+  repository = "https://kubernetes-charts.storage.googleapis.com"
+  chart      = "nginx-ingress"
+  namespace  = kubernetes_namespace.ingress.metadata.0.name
+
+  # Until Helm really fixes this issue (and not just mark it as closed), keep this flag false
+  # https://github.com/helm/charts/issues/11904
+  wait = false
+
+  set {
+    name  = "controller.replicaCount"
+    value = var.ingress_replica_count
+  }
+
+  set {
+    name  = "controller.service.loadBalancerIP"
+    value = azurerm_public_ip.ingress.ip_address
+  }
+
+  set {
+    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-dns-label-name"
+    value = azurerm_public_ip.ingress.domain_name_label
+    type  = "string"
+  }
+
+  set {
+    name  = "controller.nodeSelector.beta\\.kubernetes\\.io/os"
+    value = "linux"
+    type  = "string"
+  }
+
+  set {
+    name  = "defaultBackend.nodeSelector.beta\\.kubernetes\\.io/os"
+    value = "linux"
+    type  = "string"
+  }
+
+  set {
+    name  = "controller.extraArgs.default-ssl-certificate"
+    value = "${kubernetes_namespace.cert_manager.metadata.0.name}/${var.default_cert_secret_name}"
+  }
+}
+
 resource "helm_release" "cert_manager" {
   name       = "cert-manager"
   repository = "https://charts.jetstack.io"
@@ -74,15 +140,6 @@ resource "helm_release" "cert_manager" {
     name  = "installCRDs"
     value = true
   }
-}
-
-resource "azurerm_public_ip" "ingress_controller" {
-  name                = "pip-${random_string.unique.result}"
-  location            = azurerm_resource_group.rg.location
-  domain_name_label   = random_string.unique.result
-  resource_group_name = azurerm_kubernetes_cluster.aks.node_resource_group
-  allocation_method   = "Static"
-  sku                 = "Standard"
 }
 
 locals {
@@ -103,8 +160,6 @@ resource "null_resource" "kube_config" {
       echo "$KUBE_CONFIG_RAW" > ${local.kube_config_path}
 EOF
   }
-
-  depends_on = [azurerm_kubernetes_cluster.aks]
 }
 
 resource "null_resource" "cert_manager" {
@@ -112,7 +167,7 @@ resource "null_resource" "cert_manager" {
     kube_config              = azurerm_kubernetes_cluster.aks.kube_config_raw
     cert_manager_ns          = kubernetes_namespace.cert_manager.metadata.0.name
     default_cert_secret_name = var.default_cert_secret_name
-    fqdn                     = azurerm_public_ip.ingress_controller.fqdn
+    fqdn                     = azurerm_public_ip.ingress.fqdn
     cert_manager_sha1        = filesha1(local.cert_manager_yaml)
   }
 
@@ -120,49 +175,16 @@ resource "null_resource" "cert_manager" {
     environment = {
       KUBECONFIG               = local.kube_config_path
       DEFAULT_CERT_SECRET_NAME = var.default_cert_secret_name
-      FQDN                     = azurerm_public_ip.ingress_controller.fqdn
+      FQDN                     = azurerm_public_ip.ingress.fqdn
     }
     command = <<EOF
       envsubst < ${local.cert_manager_yaml} | kubectl apply -n ${kubernetes_namespace.cert_manager.metadata.0.name} -f -
 EOF
   }
 
-  depends_on = [null_resource.kube_config, helm_release.cert_manager]
-}
-
-resource "kubernetes_namespace" "ingress" {
-  metadata {
-    labels = {
-      name = var.ingress_namespace
-    }
-    name = var.ingress_namespace
-  }
-}
-
-resource "helm_release" "ingress" {
-  name       = "ingress-nginx"
-  repository = "https://kubernetes.github.io/ingress-nginx"
-  chart      = "ingress-nginx"
-  namespace  = kubernetes_namespace.ingress.metadata.0.name
-
-  # Until Helm really fixes this issue (and not just mark it as closed), keep this flag false
-  # https://github.com/helm/charts/issues/11904
-  wait       = false
-
-  depends_on = [null_resource.cert_manager]
-
-  set {
-    name  = "controller.replicaCount"
-    value = var.ingress_replica_count
-  }
-
-  set {
-    name  = "controller.service.loadBalancerIP"
-    value = azurerm_public_ip.ingress_controller.ip_address
-  }
-
-  set {
-    name  = "controller.extraArgs.default-ssl-certificate"
-    value = "${kubernetes_namespace.cert_manager.metadata.0.name}/${var.default_cert_secret_name}"
-  }
+  depends_on = [
+    helm_release.ingress,
+    helm_release.cert_manager,
+    null_resource.kube_config
+  ]
 }
