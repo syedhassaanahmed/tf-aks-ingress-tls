@@ -4,7 +4,7 @@ CAFE_APP_URL="https://raw.githubusercontent.com/nginxinc/kubernetes-ingress/mast
 NS_NAME="ingress-test-$(uuidgen | head -c 8)"
 INGRESS_NAME="cafe-ingress"
 
-export KUBECONFIG=.kube
+export KUBECONFIG=$PWD/kubeconfig
 
 kubectl create ns $NS_NAME
 kubectl apply -n $NS_NAME -f $CAFE_APP_URL
@@ -48,6 +48,8 @@ EXPECTED_VALUE=200
 ACTUAL_VALUE=$(curl -k -s -o /dev/null -I -w "%{http_code}" https://$ingress_fqdn/coffee)
 
 kubectl delete ns $NS_NAME
+
+unset KUBECONFIG
 
 if [ "$EXPECTED_VALUE" == "$ACTUAL_VALUE" ]; then
     echo "AKS - Nginx Ingress test passed"

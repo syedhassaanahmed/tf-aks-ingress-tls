@@ -36,16 +36,6 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 }
 
-provider "kubernetes" {
-  load_config_file       = false
-  host                   = azurerm_kubernetes_cluster.aks.kube_config.0.host
-  username               = azurerm_kubernetes_cluster.aks.kube_config.0.username
-  password               = azurerm_kubernetes_cluster.aks.kube_config.0.password
-  client_certificate     = base64decode(azurerm_kubernetes_cluster.aks.kube_config.0.client_certificate)
-  client_key             = base64decode(azurerm_kubernetes_cluster.aks.kube_config.0.client_key)
-  cluster_ca_certificate = base64decode(azurerm_kubernetes_cluster.aks.kube_config.0.cluster_ca_certificate)
-}
-
 provider "helm" {
   kubernetes {
     load_config_file       = false
@@ -58,24 +48,6 @@ provider "helm" {
   }
 }
 
-resource "kubernetes_namespace" "ingress" {
-  metadata {
-    labels = {
-      name = var.ingress_ns
-    }
-    name = var.ingress_ns
-  }
-}
-
-resource "kubernetes_namespace" "cert_manager" {
-  metadata {
-    labels = {
-      name = var.cert_manager_ns
-    }
-    name = var.cert_manager_ns
-  }
-}
-
 resource "azurerm_public_ip" "ingress" {
   name                = "pip-${random_string.unique.result}"
   location            = azurerm_resource_group.rg.location
@@ -85,11 +57,26 @@ resource "azurerm_public_ip" "ingress" {
   sku                 = "Standard"
 }
 
+resource "helm_release" "cert_manager" {
+  name             = "cert-manager"
+  repository       = "https://charts.jetstack.io"
+  chart            = "cert-manager"
+  namespace        = var.cert_manager_ns
+  create_namespace = true
+  version          = "v0.15.0"
+
+  set {
+    name  = "installCRDs"
+    value = true
+  }
+}
+
 resource "helm_release" "ingress" {
-  name       = "nginx-ingress"
-  repository = "https://kubernetes-charts.storage.googleapis.com"
-  chart      = "nginx-ingress"
-  namespace  = kubernetes_namespace.ingress.metadata.0.name
+  name             = "nginx-ingress"
+  repository       = "https://kubernetes-charts.storage.googleapis.com"
+  chart            = "nginx-ingress"
+  namespace        = var.ingress_ns
+  create_namespace = true
 
   # Until Helm really fixes this issue (and not just mark it as closed), keep this flag false
   # https://github.com/helm/charts/issues/11904
@@ -119,20 +106,7 @@ resource "helm_release" "ingress" {
 
   set {
     name  = "controller.extraArgs.default-ssl-certificate"
-    value = "${kubernetes_namespace.cert_manager.metadata.0.name}/${var.default_cert_secret_name}"
-  }
-}
-
-resource "helm_release" "cert_manager" {
-  name       = "cert-manager"
-  repository = "https://charts.jetstack.io"
-  chart      = "cert-manager"
-  namespace  = kubernetes_namespace.cert_manager.metadata.0.name
-  version    = "v0.15.0"
-
-  set {
-    name  = "installCRDs"
-    value = true
+    value = "${helm_release.cert_manager.namespace}/${var.default_cert_secret_name}"
   }
 }
 
@@ -160,7 +134,7 @@ EOF
 resource "null_resource" "cert_manager" {
   triggers = {
     kube_config              = azurerm_kubernetes_cluster.aks.kube_config_raw
-    cert_manager_ns          = kubernetes_namespace.cert_manager.metadata.0.name
+    cert_manager_ns          = helm_release.cert_manager.namespace
     default_cert_secret_name = var.default_cert_secret_name
     fqdn                     = azurerm_public_ip.ingress.fqdn
     cert_manager_sha1        = filesha1(local.cert_manager_yaml)
@@ -173,7 +147,7 @@ resource "null_resource" "cert_manager" {
       FQDN                     = azurerm_public_ip.ingress.fqdn
     }
     command = <<EOF
-      envsubst < ${local.cert_manager_yaml} | kubectl apply -n ${kubernetes_namespace.cert_manager.metadata.0.name} -f -
+      envsubst < ${local.cert_manager_yaml} | kubectl apply -n ${helm_release.cert_manager.namespace} -f -
 EOF
   }
 
