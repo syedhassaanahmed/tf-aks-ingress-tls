@@ -106,12 +106,6 @@ resource "helm_release" "ingress" {
   }
 
   set {
-    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-dns-label-name"
-    value = azurerm_public_ip.ingress.domain_name_label
-    type  = "string"
-  }
-
-  set {
     name  = "controller.nodeSelector.beta\\.kubernetes\\.io/os"
     value = "linux"
     type  = "string"
@@ -143,7 +137,7 @@ resource "helm_release" "cert_manager" {
 }
 
 locals {
-  kube_config_path  = "${path.module}/.kube"
+  kube_config_path  = "${path.module}/kubeconfig"
   cert_manager_yaml = "${path.module}/cert-manager.yaml"
 }
 
