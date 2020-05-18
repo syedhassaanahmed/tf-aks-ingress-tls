@@ -110,30 +110,18 @@ resource "helm_release" "ingress" {
   }
 }
 
-locals {
-  kube_config_path  = "${path.module}/kubeconfig"
-  cert_manager_yaml = "${path.module}/cert-manager.yaml"
+resource "local_file" "kube_config" {
+  filename          = "${path.module}/kubeconfig"
+  sensitive_content = azurerm_kubernetes_cluster.aks.kube_config_raw
 }
 
-resource "null_resource" "kube_config" {
-  triggers = {
-    always = timestamp()
-  }
-
-  provisioner "local-exec" {
-    environment = {
-      # Use env var to pass kube config otherwise terraform cli will print it to stdout
-      KUBE_CONFIG_RAW = azurerm_kubernetes_cluster.aks.kube_config_raw
-    }
-    command = <<EOF
-      echo "$KUBE_CONFIG_RAW" > ${local.kube_config_path}
-EOF
-  }
+locals {
+  cert_manager_yaml = "${path.module}/cert-manager.yaml"
 }
 
 resource "null_resource" "cert_manager" {
   triggers = {
-    kube_config              = azurerm_kubernetes_cluster.aks.kube_config_raw
+    kube_config              = sha1(azurerm_kubernetes_cluster.aks.kube_config_raw)
     cert_manager_ns          = helm_release.cert_manager.namespace
     default_cert_secret_name = var.default_cert_secret_name
     fqdn                     = azurerm_public_ip.ingress.fqdn
@@ -142,7 +130,7 @@ resource "null_resource" "cert_manager" {
 
   provisioner "local-exec" {
     environment = {
-      KUBECONFIG               = local.kube_config_path
+      KUBECONFIG               = local_file.kube_config.filename
       DEFAULT_CERT_SECRET_NAME = var.default_cert_secret_name
       FQDN                     = azurerm_public_ip.ingress.fqdn
     }
@@ -153,7 +141,6 @@ EOF
 
   depends_on = [
     helm_release.ingress,
-    helm_release.cert_manager,
-    null_resource.kube_config
+    helm_release.cert_manager
   ]
 }
